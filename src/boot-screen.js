@@ -780,8 +780,19 @@
             }
             playing()
           }
-          var fallback = function () {
-            namespace.audioBlocked = 'refused'
+          /**
+           * Give up on sound for now, and record WHY.
+           *
+           * There are two different reasons and they used to share one word.
+           * `refused` is the browser rejecting the unmuted start - the case the
+           * press exists for, where no gesture means no sound. `slow` is only
+           * "the start had not resolved when the window ran out": the picture has
+           * to go up regardless, but nothing was refused, and if that attempt
+           * does land after all the sound goes back on instead of staying stuck
+           * behind a button that claims it still has to be turned on.
+           */
+          var fallback = function (reason) {
+            namespace.audioBlocked = reason
             audioRetry = function () {
               attemptPlay(false, function () {/* stays silent */})
             }
@@ -801,10 +812,55 @@
           // conflicting load, and waiting on it forever is what leaves the screen
           // on a bare gradient. A short window bounds it; the muted retry always
           // starts because muted autoplay is what the policy permits.
-          var soundWindow = globalThis.setTimeout(fallback, 1200)
+          //
+          // What the window must NOT do is conclude that sound was refused. It
+          // cannot tell "refused" from "slower than 1.2s", and the version that
+          // assumed the first put the screen into the refusal state on a merely
+          // slow start: silent clip, "开声音" button, and - because the late
+          // success was ignored - no way back except the press that the button
+          // was asking for. Users with autoplay already allowed saw exactly that.
+          var slow = false
+          var soundWindow = globalThis.setTimeout(function () {
+            slow = true
+            fallback('slow')
+          }, 1200)
           var settleWindow = function () { globalThis.clearTimeout(soundWindow) }
-          var unmutedPlaying = function () { settleWindow(); playing() }
-          var unmutedRefused = function () { settleWindow(); fallback() }
+          /**
+           * The unmuted start is playing: no press is owed any more.
+           *
+           * The button is not removed (it is the only way back to silence), but
+           * it stops saying "开声音" while the clip is audibly playing, which is
+           * what made it read as a control that had to be pressed.
+           */
+          var soundIsOn = function () {
+            namespace.audioBlocked = null
+            audioRetry = null
+            if (parts.sound) parts.sound.textContent = '🔊 声音已开'
+            if (!namespace.failed && !clipDone) parts.hint.textContent = HINT_SOUND
+          }
+          var unmutedPlaying = function () {
+            settleWindow()
+            playing()
+            if (!slow) {
+              soundIsOn()
+              return
+            }
+            // Permitted after all, just slower than the window. The element is
+            // playing muted by now, so the sound the user asked for is put back.
+            if (parts.video() !== video) return
+            video.muted = false
+            soundIsOn()
+          }
+          var unmutedRefused = function () {
+            settleWindow()
+            // Past the window the fallback has already run, so only the reason
+            // needs correcting - re-running it would start a second playback.
+            if (slow) {
+              namespace.audioBlocked = 'refused'
+              return
+            }
+            fallback('refused')
+          }
           video.muted = false
           var played
           try {
